@@ -577,6 +577,26 @@ function findTerminalPid(): number {
   }
 }
 
+let cachedQdbusBinary: string | null | undefined
+
+// Fedora ships Qt's D-Bus tooling under versioned names (e.g. `qdbus-qt6`)
+// while other distros expose a plain `qdbus`. Resolve once and cache.
+export function resolveQdbusBinary(): string | null {
+  if (cachedQdbusBinary !== undefined) {
+    return cachedQdbusBinary
+  }
+
+  for (const candidate of ["qdbus-qt6", "qdbus6", "qdbus-qt5", "qdbus5", "qdbus"]) {
+    if (execWithTimeout(`command -v ${candidate}`, 1000)) {
+      cachedQdbusBinary = candidate
+      return candidate
+    }
+  }
+
+  cachedQdbusBinary = null
+  return null
+}
+
 function focusKDEWithKWinScript(): void {
   try {
     const pinnedWindowId = process.env.OPENCODE_NOTIFIER_WINDOW_ID?.trim() || null
@@ -713,15 +733,20 @@ findAndActivateTerminal();
     const pluginName = `opencode-focus-${currentPid}`
     writeFileSync(scriptPath, scriptContent)
 
+    const qdbus = resolveQdbusBinary()
+    if (!qdbus) {
+      throw new Error("qdbus not found")
+    }
+
     // Load the script
     execSync(
-      `qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "${scriptPath}" "${pluginName}"`,
+      `${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "${scriptPath}" "${pluginName}"`,
       { encoding: "utf-8", timeout: 2000 }
     )
 
     // Start the script
     execSync(
-      `qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.start`,
+      `${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.start`,
       { timeout: 2000 }
     )
 
@@ -733,10 +758,13 @@ findAndActivateTerminal();
     // Unload the script after a short delay
     setTimeout(() => {
       try {
-        execSync(
-          `qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "${pluginName}"`,
-          { timeout: 500 }
-        )
+        const qdbus = resolveQdbusBinary()
+        if (qdbus) {
+          execSync(
+            `${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "${pluginName}"`,
+            { timeout: 500 }
+          )
+        }
       } catch {}
     }, 1000)
     
